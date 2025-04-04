@@ -16,4 +16,4 @@ If not, the final JSON is populated with failure information. If a job with a la
 ![Template][def]
 
 
-[def]: Image/Image/Netbackup-diagram.jpg
+[def]: Image/Netbackup-diagram.jpg
