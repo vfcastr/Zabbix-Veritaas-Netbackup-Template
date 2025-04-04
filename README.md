@@ -1,4 +1,4 @@
-# Zabbix-Veritas-Netbackup-Template
+# Zabbix Veritas Netbackup Template
 
 ## Description
 
