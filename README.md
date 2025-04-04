@@ -11,6 +11,19 @@ The master item is used to connect to the API using a script-type item that retr
 
 If not, the final JSON is populated with failure information. If a job with a later startTime than the endTime of the failed job is found, the JSON is updated with success information. This ensures that Zabbix is able to automatically resolve the problem that was previously triggered.
 
+Another feature of the template is the collection of Disk Pool data:
+```
+- Available Space (Bytes)
+- Name
+- Raw Size (Bytes)
+- Read-Only Status
+- State
+- Storage Server Name
+- Type
+- Usable Size
+- Used Capacity
+- Used Capacity (%)
+```
 
 ## Diagram
 ![Template][def]

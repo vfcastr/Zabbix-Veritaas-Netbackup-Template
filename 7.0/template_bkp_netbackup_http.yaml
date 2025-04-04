@@ -1,0 +1,656 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: 28d92aaac449423396f9d61f9abe099e
+      name: Templates/Applications
+  templates:
+    - uuid: f0adfc84810f4813af69091dfbf53ef3
+      template: 'Veritas Netbackup by HTTP'
+      name: 'Veritas Netbackup by HTTP'
+      vendor:
+        name: viniciuscastro95@gmail.com
+        version: 7.0-3
+      groups:
+        - name: Templates/Applications
+      items:
+        - uuid: 2fd11d30fccc4e4893d8611b908946c0
+          name: 'Check API communication'
+          type: SIMPLE
+          key: 'net.tcp.service[tcp,{HOST.CONN},1556]'
+          delay: 5m
+          tags:
+            - tag: component
+              value: availability
+        - uuid: fa3c18c006cd46e397664cee6b7d68c1
+          name: 'Veritas Netbackup - Get DiskPool'
+          type: SCRIPT
+          key: veritas.netbackup.diskpool.raw
+          delay: 5m
+          value_type: TEXT
+          params: |
+            // Macros do Zabbix para credenciais do NetBackup
+            var BASE_URL = "https://{$VERITAS.HOSTNAME}:{$VERITAS.PORT}/netbackup";
+            var AUTH_URL = BASE_URL + "/login";
+            var DISKPOOL_URL = BASE_URL + "/storage/disk-pools";
+            var PAGELIMIT = 100;
+            var PAGEOFFSET = 0;
+
+            // Calcula o tempo UTC atual e 30 minutos atrás no formato ISO 8601
+            function getUTCDateISO(minutesAgo) {
+                var date = new Date();
+                date.setMinutes(date.getMinutes() - minutesAgo);
+                return date.toISOString().split(".")[0] + ".000Z"; // Remove milissegundos extra
+            }
+
+            var endTimeISO = getUTCDateISO(0);   // Tempo atual UTC
+            var startTimeISO = getUTCDateISO(720); // Últimos 12 horas UTC
+
+            // Função para autenticação e obtenção do token JWT
+            function getToken() {
+                var req = new HttpRequest();
+                req.addHeader("Content-Type: application/json");
+
+                var payload = JSON.stringify({
+                    "userName": "{$VERITAS.USER}",
+                    "password": "{$VERITAS.PASSWORD}"
+                });
+
+                var response = req.post(AUTH_URL, payload);
+                var status = req.getStatus();
+
+                if (!response || response.length <= 5 || status !== 201) {
+                    throw "Falha na autenticação. Status: " + status + " | Resposta: " + response;
+                }
+
+                var token = JSON.parse(response).token;
+                Zabbix.log(4, "Token obtido com sucesso: " + token);
+                return token;
+            }
+
+            // Função para buscar storage e tratar a paginação corretamente
+            function getDiskPools(token) {
+                var OFFSET = encodeURIComponent("page[offset]") + "=" + PAGEOFFSET;
+                var LIMIT = encodeURIComponent("page[limit]") + "=" + PAGELIMIT;
+                var API_URL = DISKPOOL_URL + "?" + LIMIT + "&" + OFFSET;  // Monta a URL com o filtro corretamente
+                var allStorages = [];
+
+                var req = new HttpRequest();
+                req.addHeader('Content-Type: application/vnd.netbackup+json;version=11.0');
+                req.addHeader('Accept: application/vnd.netbackup+json;version=11.0');
+                req.addHeader('Authorization: Bearer ' + token);
+
+                while (API_URL) {
+                    Zabbix.log(4, "Requisição GET para: " + API_URL);
+
+                    var response = req.get(API_URL);
+                    var responseStatus = req.getStatus();
+
+                    if (!response || response.length <= 5) {
+                        throw 'Nenhum dado recebido da API.';
+                    }
+                    if (responseStatus !== 200) {
+                        throw 'Erro na requisição. Código: ' + responseStatus + " | Resposta: " + response;
+                    }
+
+                    var jsonResponse = JSON.parse(response);
+                    allStorages = allStorages.concat(jsonResponse.data || []);
+
+                    // Verifica se há mais páginas na resposta
+                    if (jsonResponse.links && jsonResponse.links.next && jsonResponse.links.next.href) {
+                        API_URL = jsonResponse.links.next.href;  // Obtém a URL da próxima página
+                    } else {
+                        API_URL = null;  // Não há mais páginas
+                    }
+                }
+
+                return JSON.stringify(allStorages);
+            }
+
+            // Execução do Script
+            try {
+                var token = getToken();  // Obtém o token JWT corretamente
+                var responseJson = getDiskPools(token);  // Busca os storage
+
+                return responseJson;  // Retorna a resposta bruta da API para o Zabbix
+            } catch (error) {
+                Zabbix.log(4, "Erro ao buscar dados de storage no NetBackup: " + error.toString());
+                return JSON.stringify({ "error": error.toString() });
+            }
+          tags:
+            - tag: component
+              value: raw
+        - uuid: 93898c7a564843e08e5d40694cc9f242
+          name: 'Veritas Netbackup - Get Jobs Failed'
+          type: SCRIPT
+          key: veritas.netbackup.jobs.raw
+          delay: 5m
+          value_type: TEXT
+          params: |
+            // Macros do Zabbix para credenciais do NetBackup
+            var BASE_URL = "https://{$VERITAS.HOSTNAME}:{$VERITAS.PORT}/netbackup";
+            var AUTH_URL = BASE_URL + "/login";
+            var JOBS_URL = BASE_URL + "/admin/jobs";
+            var PAGELIMIT = 100;
+
+            // Calcula o tempo UTC atual e minutos atrás no formato ISO 8601
+            function getUTCDateISO(minutesAgo) {
+                var date = new Date();
+                date.setMinutes(date.getMinutes() - minutesAgo);
+                return date.toISOString().split(".")[0] + ".000Z";
+            }
+
+            var endTimeISO = getUTCDateISO(0);    // Agora
+            var startTimeISO = getUTCDateISO(240); // 6h atrás
+
+            // Função para autenticação e obtenção do token JWT
+            function getToken() {
+                var req = new HttpRequest();
+                req.addHeader("Content-Type: application/json");
+
+                var payload = JSON.stringify({
+                    "userName": "{$VERITAS.USER}",
+                    "password": "{$VERITAS.PASSWORD}"
+                });
+
+                var response = req.post(AUTH_URL, payload);
+                var status = req.getStatus();
+
+                if (!response || response.length <= 5 || status !== 201) {
+                    throw "Falha na autenticação. Status: " + status + " | Resposta: " + response;
+                }
+
+                return JSON.parse(response).token;
+            }
+
+            // Verifica se há um job de sucesso após o job com falha
+            function checkIfJobCleared(token, policyName, failedJobEndTime) {
+                var STATUS = "filter=" + encodeURIComponent("policyName eq '" + policyName + "'");
+                var LIMIT = encodeURIComponent("page[limit]") + "=" + PAGELIMIT;
+                var SORT = "sort=-startTime,jobId";
+                var URL = JOBS_URL + "?" + STATUS + "&" + LIMIT + "&" + SORT;
+
+                var req = new HttpRequest();
+                req.addHeader('Content-Type: application/vnd.netbackup+json;version=11.0');
+                req.addHeader('Accept: application/vnd.netbackup+json;version=11.0');
+                req.addHeader('Authorization: Bearer ' + token);
+
+                var response = req.get(URL);
+                if (req.getStatus() !== 200 || !response) return false;
+
+                var result = JSON.parse(response);
+                if (!result.data) return false;
+
+                var failedEnd = new Date(failedJobEndTime).getTime();
+
+                for (var i = 0; i < result.data.length; i++) {
+                    var job = result.data[i];
+                    if (job.attributes && job.attributes.status === 0) {
+                        var jobStart = new Date(job.attributes.startTime).getTime();
+                        if (jobStart > failedEnd) {
+                            return true; // Executado com sucesso após a falha
+                        }
+                    }
+                }
+                return false;
+            }
+
+            // Função principal para buscar jobs com falha e validar clears
+            function getFailedJobs(token) {
+                var STATUS = "filter=" + encodeURIComponent("status gt 2");
+                var PARENTJOB = encodeURIComponent("parentJobId eq 0");
+                var STARTTIME = encodeURIComponent("endTime ge " + startTimeISO);
+                var ENDTIME = encodeURIComponent("endTime le " + endTimeISO);
+                var LIMIT = encodeURIComponent("page[limit]") + "=" + PAGELIMIT;
+                var API_URL = JOBS_URL + "?" + STATUS + "%20and%20" + PARENTJOB + "%20and%20" + STARTTIME + "%20and%20" + ENDTIME + "&" + LIMIT;
+
+                var allJobs = [];
+
+                var req = new HttpRequest();
+                req.addHeader('Content-Type: application/vnd.netbackup+json;version=11.0');
+                req.addHeader('Accept: application/vnd.netbackup+json;version=11.0');
+                req.addHeader('Authorization: Bearer ' + token);
+
+                while (API_URL) {
+                    Zabbix.log(4, "GET: " + API_URL);
+
+                    var response = req.get(API_URL);
+                    var status = req.getStatus();
+
+                    if (!response || status !== 200) {
+                        throw "Erro na requisição. Código: " + status + " | Resposta: " + response;
+                    }
+
+                    var parsed = JSON.parse(response);
+                    var jobs = parsed.data || [];
+
+                    for (var j = 0; j < jobs.length; j++) {
+                        var job = jobs[j];
+                        var policy = job.attributes.policyName;
+                        var endTime = job.attributes.endTime;
+
+                        if (checkIfJobCleared(token, policy, endTime)) {
+                            job.attributes.status = 0; // Marca como resolvido
+                        }
+
+                        allJobs.push(job);
+                    }
+
+                    if (parsed.links && parsed.links.next && parsed.links.next.href) {
+                        API_URL = parsed.links.next.href;
+                    } else {
+                        API_URL = null;
+                    }
+                }
+
+                return JSON.stringify(allJobs);
+            }
+
+            // Execução
+            try {
+                var token = getToken();
+                var jobs = getFailedJobs(token);
+                return jobs;
+            } catch (e) {
+                Zabbix.log(4, "Erro: " + e.toString());
+                return JSON.stringify({ "error": e.toString() });
+            }
+          tags:
+            - tag: component
+              value: raw
+          triggers:
+            - uuid: e9f15bfafe67435399a394c87aeac022
+              expression: 'nodata(/Veritas Netbackup by HTTP/veritas.netbackup.jobs.raw,1h)=1'
+              name: 'No data from Veritas Netbackup API received'
+              priority: HIGH
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+      discovery_rules:
+        - uuid: c0b221caad9345a18195798effb7364b
+          name: 'Discovery Netbackup Disk Pool'
+          type: DEPENDENT
+          key: discovery.netbackup.diskpool
+          lifetime_type: DELETE_IMMEDIATELY
+          item_prototypes:
+            - uuid: 6cc8d22d0f81494fa44b0b7517863800
+              name: 'DiskPool: {#DISKPOOL.NAME} Available Space Bytes'
+              type: DEPENDENT
+              key: 'veritas.netbackup.availableSpace.bytes[{#DISKPOOL.ID}]'
+              trends: '0'
+              units: B
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == ''{#DISKPOOL.ID}'')]..attributes.availableSpaceBytes'
+                - type: TRIM
+                  parameters:
+                    - '[]"'
+              master_item:
+                key: veritas.netbackup.diskpool.raw
+              tags:
+                - tag: application
+                  value: netbackup
+                - tag: Id
+                  value: '{#DISKPOOL.ID}'
+                - tag: Name
+                  value: '{#DISKPOOL.NAME}'
+            - uuid: 23d5350e68d34a12a60a39e7df06df9c
+              name: 'DiskPool: {#DISKPOOL.NAME} Name'
+              type: DEPENDENT
+              key: 'veritas.netbackup.diskpool.name[{#DISKPOOL.ID}]'
+              value_type: TEXT
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == ''{#DISKPOOL.ID}'')].attributes.name'
+                - type: TRIM
+                  parameters:
+                    - '[]"'
+              master_item:
+                key: veritas.netbackup.diskpool.raw
+              tags:
+                - tag: application
+                  value: netbackup
+                - tag: Id
+                  value: '{#DISKPOOL.ID}'
+                - tag: Name
+                  value: '{#DISKPOOL.NAME}'
+            - uuid: d2123199119d47ffb7c3b656c8a2a7c3
+              name: 'DiskPool: {#DISKPOOL.NAME} State'
+              type: DEPENDENT
+              key: 'veritas.netbackup.diskpool.state[{#DISKPOOL.ID}]'
+              value_type: TEXT
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == ''{#DISKPOOL.ID}'')].attributes.diskPoolState'
+                - type: TRIM
+                  parameters:
+                    - '[]"'
+              master_item:
+                key: veritas.netbackup.diskpool.raw
+              tags:
+                - tag: application
+                  value: netbackup
+                - tag: Id
+                  value: '{#DISKPOOL.ID}'
+                - tag: Name
+                  value: '{#DISKPOOL.NAME}'
+              trigger_prototypes:
+                - uuid: 2a1e63c4a0474fd7b591ad4f14676948
+                  expression: |
+                    last(/Veritas Netbackup by HTTP/veritas.netbackup.diskpool.state[{#DISKPOOL.ID}],#3)<>"UP" and
+                    last(/Veritas Netbackup by HTTP/veritas.netbackup.diskpool.state[{#DISKPOOL.ID}],#2)<>"UP" and
+                    last(/Veritas Netbackup by HTTP/veritas.netbackup.diskpool.state[{#DISKPOOL.ID}])<>"UP"
+                  recovery_mode: RECOVERY_EXPRESSION
+                  recovery_expression: |
+                    last(/Veritas Netbackup by HTTP/veritas.netbackup.diskpool.state[{#DISKPOOL.ID}],#3)="UP" and
+                    last(/Veritas Netbackup by HTTP/veritas.netbackup.diskpool.state[{#DISKPOOL.ID}],#2)="UP" and
+                    last(/Veritas Netbackup by HTTP/veritas.netbackup.diskpool.state[{#DISKPOOL.ID}])="UP"
+                  name: 'NETBACKUP: DiskPool {#DISKPOOL.NAME} state is {ITEM.VALUE}'
+                  priority: HIGH
+                  manual_close: 'YES'
+                  tags:
+                    - tag: diskPool
+                      value: '{#DISKPOOL.NAME}'
+            - uuid: 0c2a393c6a174894b563f5f92a924bbf
+              name: 'DiskPool: {#DISKPOOL.NAME} Type'
+              type: DEPENDENT
+              key: 'veritas.netbackup.diskpool.type[{#DISKPOOL.ID}]'
+              value_type: TEXT
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == ''{#DISKPOOL.ID}'')].attributes.sType'
+                - type: TRIM
+                  parameters:
+                    - '[]"'
+              master_item:
+                key: veritas.netbackup.diskpool.raw
+              tags:
+                - tag: application
+                  value: netbackup
+                - tag: Id
+                  value: '{#DISKPOOL.ID}'
+                - tag: Name
+                  value: '{#DISKPOOL.NAME}'
+            - uuid: 1d07211306d04dc3acce5fd64d2a9272
+              name: 'DiskPool: {#DISKPOOL.NAME} Raw Size Bytes'
+              type: DEPENDENT
+              key: 'veritas.netbackup.rawSize.bytes[{#DISKPOOL.ID}]'
+              trends: '0'
+              units: B
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == ''{#DISKPOOL.ID}'')]..attributes.rawSizeBytes'
+                - type: TRIM
+                  parameters:
+                    - '[]"'
+              master_item:
+                key: veritas.netbackup.diskpool.raw
+              tags:
+                - tag: application
+                  value: netbackup
+                - tag: Id
+                  value: '{#DISKPOOL.ID}'
+                - tag: Name
+                  value: '{#DISKPOOL.NAME}'
+            - uuid: 510a942d305949eabe6c10899e7b5e64
+              name: 'DiskPool: {#DISKPOOL.NAME} Read Only Status'
+              type: DEPENDENT
+              key: 'veritas.netbackup.readOnly[{#DISKPOOL.ID}]'
+              value_type: TEXT
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == ''{#DISKPOOL.ID}'')]..attributes.readOnly'
+                - type: TRIM
+                  parameters:
+                    - '[]'
+              master_item:
+                key: veritas.netbackup.diskpool.raw
+              tags:
+                - tag: application
+                  value: netbackup
+                - tag: Id
+                  value: '{#DISKPOOL.ID}'
+                - tag: Name
+                  value: '{#DISKPOOL.NAME}'
+            - uuid: c1fe34d92ce24f30b1bd21da04b017d7
+              name: 'DiskPool: {#DISKPOOL.NAME} Storage Server Name'
+              type: DEPENDENT
+              key: 'veritas.netbackup.storageServer.name[{#DISKPOOL.ID}]'
+              value_type: TEXT
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == ''{#DISKPOOL.ID}'')].relationships.storageServers..data..id'
+                - type: TRIM
+                  parameters:
+                    - '[]"'
+                - type: REGEX
+                  parameters:
+                    - ':(.*)'
+                    - \1
+              master_item:
+                key: veritas.netbackup.diskpool.raw
+              tags:
+                - tag: application
+                  value: netbackup
+                - tag: Id
+                  value: '{#DISKPOOL.ID}'
+                - tag: Name
+                  value: '{#DISKPOOL.NAME}'
+            - uuid: 9546ca3765214468a5d2dcf7f1bfee77
+              name: 'DiskPool: {#DISKPOOL.NAME} Usable Size Bytes'
+              type: DEPENDENT
+              key: 'veritas.netbackup.usableSize.bytes[{#DISKPOOL.ID}]'
+              trends: '0'
+              units: B
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == ''{#DISKPOOL.ID}'')]..attributes.usableSizeBytes'
+                - type: TRIM
+                  parameters:
+                    - '[]"'
+              master_item:
+                key: veritas.netbackup.diskpool.raw
+              tags:
+                - tag: application
+                  value: netbackup
+                - tag: Id
+                  value: '{#DISKPOOL.ID}'
+                - tag: Name
+                  value: '{#DISKPOOL.NAME}'
+            - uuid: bd7ba9f4e9e646778d0b4049a24368fa
+              name: 'DiskPool: {#DISKPOOL.NAME} Used Capacity Bytes'
+              type: DEPENDENT
+              key: 'veritas.netbackup.usedCapacity.bytes[{#DISKPOOL.ID}]'
+              trends: '0'
+              units: B
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == ''{#DISKPOOL.ID}'')]..attributes.usedCapacityBytes'
+                - type: TRIM
+                  parameters:
+                    - '[]"'
+              master_item:
+                key: veritas.netbackup.diskpool.raw
+              tags:
+                - tag: application
+                  value: netbackup
+                - tag: Id
+                  value: '{#DISKPOOL.ID}'
+                - tag: Name
+                  value: '{#DISKPOOL.NAME}'
+            - uuid: 52f1c35e805648daa781629a8d038ec9
+              name: 'DiskPool: {#DISKPOOL.NAME} Used Capacity Percent'
+              type: CALCULATED
+              key: 'veritas.netbackup.usedCapacity.percent[{#DISKPOOL.ID}]'
+              delay: 6m
+              trends: '0'
+              units: '%'
+              params: 'last(//veritas.netbackup.usedCapacity.bytes[{#DISKPOOL.ID}])/last(//veritas.netbackup.rawSize.bytes[{#DISKPOOL.ID}])*100'
+              tags:
+                - tag: application
+                  value: netbackup
+                - tag: Id
+                  value: '{#DISKPOOL.ID}'
+                - tag: Name
+                  value: '{#DISKPOOL.NAME}'
+          master_item:
+            key: veritas.netbackup.diskpool.raw
+          lld_macro_paths:
+            - lld_macro: '{#DISKPOOL.AVAIL.BYTES}'
+              path: $.attributes.availableSpaceBytes
+            - lld_macro: '{#DISKPOOL.ID}'
+              path: $.id
+            - lld_macro: '{#DISKPOOL.NAME}'
+              path: $.attributes.name
+            - lld_macro: '{#DISKPOOL.RAW.BYTES}'
+              path: $.attributes.rawSizeBytes
+            - lld_macro: '{#DISKPOOL.READONLY}'
+              path: $.attributes.readOnly
+            - lld_macro: '{#DISKPOOL.SSNAME}'
+              path: $.relationships.storageServers..data..id
+            - lld_macro: '{#DISKPOOL.STATE}'
+              path: $.attributes.diskPoolState
+            - lld_macro: '{#DISKPOOL.STYPE}'
+              path: $.attributes.sType
+            - lld_macro: '{#DISKPOOL.USABLE.BYTES}'
+              path: $.attributes.usableSizeBytes
+            - lld_macro: '{#DISKPOOL.USED.BYTES}'
+              path: $.attributes.usedCapacityBytes
+        - uuid: d0f6a5a5516c4361867b9d77584142cc
+          name: 'Discovery Netbackup Jobs'
+          type: DEPENDENT
+          key: discovery.netbackup.jobs
+          lifetime: 2d
+          item_prototypes:
+            - uuid: 97eeb650512e4f50ba2d6bbd303362be
+              name: 'NETBACKUP: Job ({#POLICYNAME} - ID: {#JOBID}) Raw data'
+              type: DEPENDENT
+              key: 'netbackup.job.raw[{#JOBID}]'
+              value_type: TEXT
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$..[?(@.jobId == {#JOBID})]'
+              master_item:
+                key: veritas.netbackup.jobs.raw
+              tags:
+                - tag: application
+                  value: netbackup
+            - uuid: 91be992e34564f14836f1f2c4db70cd4
+              name: 'NETBACKUP: Job ({#POLICYNAME} - ID: {#JOBID}) Status'
+              type: DEPENDENT
+              key: 'netbackup.job.status[{#JOBID}]'
+              trends: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$..[?(@.jobId == {#JOBID})].status'
+                - type: TRIM
+                  parameters:
+                    - '[]'
+              master_item:
+                key: veritas.netbackup.jobs.raw
+              tags:
+                - tag: application
+                  value: netbackup
+              trigger_prototypes:
+                - uuid: f16da12387734ba6856c0813680222d6
+                  expression: |
+                    last(/Veritas Netbackup by HTTP/netbackup.job.status[{#JOBID}])<>20 and
+                    last(/Veritas Netbackup by HTTP/netbackup.job.status[{#JOBID}])<>11 and
+                    last(/Veritas Netbackup by HTTP/netbackup.job.status[{#JOBID}])<>0
+                  name: 'NETBACKUP: Job ({#POLICYNAME} - ID: {#JOBID}) finished with status failed: {#STATE} - ET: {#ENDTIME}'
+                  priority: AVERAGE
+                  manual_close: 'YES'
+                  tags:
+                    - tag: ClientName
+                      value: '{#CLIENTNAME}'
+                    - tag: InstanceID
+                      value: '{#POLICYNAME}'
+                    - tag: InstanceSituation
+                      value: '{#SCHEDULETYPE}'
+                    - tag: JobState
+                      value: '{#STATE}'
+                    - tag: JobType
+                      value: '{#JOBTYPE}'
+                    - tag: PolicyType
+                      value: '{#POLICYTYPE}'
+                    - tag: scope
+                      value: Status
+                    - tag: StorageUnitName
+                      value: '{#STORAGEUNITNAME}'
+          master_item:
+            key: veritas.netbackup.jobs.raw
+          lld_macro_paths:
+            - lld_macro: '{#CLIENTNAME}'
+              path: $..attributes.clientName.first()
+            - lld_macro: '{#ENDTIME}'
+              path: $..attributes.endTime.first()
+            - lld_macro: '{#JOBID}'
+              path: $..attributes.jobId.first()
+            - lld_macro: '{#JOBTYPE}'
+              path: $..attributes.jobType.first()
+            - lld_macro: '{#MEDIASERVERNAME}'
+              path: $..attributes.destinationMediaServerName.first()
+            - lld_macro: '{#POLICYNAME}'
+              path: $..attributes.policyName.first()
+            - lld_macro: '{#POLICYTYPE}'
+              path: $..attributes.policyType.first()
+            - lld_macro: '{#SCHEDULETYPE}'
+              path: $..attributes.scheduleType.first()
+            - lld_macro: '{#STARTTIME}'
+              path: $..attributes.startTime.first()
+            - lld_macro: '{#STATE}'
+              path: $..attributes.state.first()
+            - lld_macro: '{#STORAGEUNITNAME}'
+              path: $..attributes.destinationStorageUnitName.first()
+      tags:
+        - tag: class
+          value: Backup
+        - tag: target
+          value: VeritasNetBackup
+      macros:
+        - macro: '{$VERITAS.HOSTNAME}'
+          value: '<Hostname>'
+          description: 'Veritas Netbackup hostname or ip from master server.'
+        - macro: '{$VERITAS.PASSWORD}'
+          value: '<Password>'
+          description: 'Veritas Netbackup password for User'
+        - macro: '{$VERITAS.PORT}'
+          value: '1556'
+          description: 'Veritas Netbackup API Port. Default is 1556.'
+        - macro: '{$VERITAS.SERVERNAME}'
+          value: '<backupServer name>'
+          description: 'Veritas Netbackup Server Name'
+        - macro: '{$VERITAS.USER}'
+          value: '<Username>'
+          description: 'Veritas Netbackup User'
+      valuemaps:
+        - uuid: a9da24de554e4d8388f2c82876926479
+          name: 'Error Codes Backup Netbackup'
+          mappings:
+            - value: '2'
+              newvalue: 'None of the requested files were backed up'
+            - value: '11'
+              newvalue: 'System call failed'
+            - value: '20'
+              newvalue: 'Invalid command parameter'
+            - value: '84'
+              newvalue: 'Media write error'
+            - value: '96'
+              newvalue: 'Unable to allocate new media for backup, storage unit has none a'
+            - value: '4287'
+              newvalue: 'A NetBackup snapshot of the virtual machine exists and the polic'
+            - value: '150'
+              newvalue: 'termination requested by administrator'
+            - value: '4234'
+              newvalue: 'VMware server login failure'
